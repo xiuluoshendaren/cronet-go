@@ -1,0 +1,78 @@
+# CLAUDE.md
+
+This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
+
+## Project Overview
+
+cronet-go 将 Chromium Cronet 网络栈编译为 Go 可调用的 `.so` / `.dylib`，通过 CGO 提供原生绑定、HTTP 客户端与双向流适配。本仓库保存 Go 代码、Chromium 补丁和部分预编译库；Chromium 源码及 GN 构建配置在仓库之外。
+
+## Workflow Rules
+
+1. **编码前先写计划** — 任何编码任务开始前，在 `.claude/plan/yyyy-MM-dd/` 创建带 `NN-` 编号的计划文件。计划让后续会话可追溯任务背景、决策与验证。
+2. **大任务维护工作包清单** — 多步骤、多文件或多阶段任务，在计划中先列工作包表格：`编号 / 内容 / 状态`。状态只用 `待执行`、`执行中`、`已完成` 或 `阻塞（注明原因）`；开始某包立即回写“执行中”，完成立即回写“已完成”，不得在最后批量补写。计划与状态记录随任务提交。
+3. **新会话先装载项目上下文** — 完整读取根目录 `CLAUDE.md` 和 `MEMORY.md`；遵循 `CLAUDE.md` 引用的项目规范。项目有 `.claude/skills/` 时，对当前任务适用的技能须先加载再执行。
+4. **记忆索引保持完整** — 新增、重命名或删除 `.claude/memory/` 下记忆文件时，同步更新根目录 `MEMORY.md`；结束前确认索引链接与实际记忆一一对应。
+5. **Agent 改动的文件必须提交并推送** — 所有由 agent 操作（增、删、改）且应纳入版本控制的文件，都必须依次执行 `git add .`、`git commit`、`git push`。commit message 用 Conventional Commits、准确描述改动；无 upstream 时用 `git push -u origin <当前分支>`。测试失败、冲突、权限拒绝或推送失败时停止并如实报告。
+6. **worktrees 与编号统一管理** — 所有 worktrees 放在 `.claude/worktrees/`；`.claude` 下生成文件按本 skill 的 `NN-` 编号规则命名。
+7. **跨 agent 资源入口保持统一** — 项目根目录的 `.agents` 必须是指向 `.claude` 的相对符号链接，其他 agent 与 Claude 共用同一份 skills、memory 等资源，不复制维护第二份。
+
+## 会话约定
+
+- 使用中文回复；每次会话第一条回复前先加载 ultracave skill。宿主没有专用 Skill 工具时，读取可用技能目录中对应 SKILL.md；不可声称调用了不存在的工具。
+- 保留用户要求的 `git add .`，提交前检查暂存范围与敏感内容。
+- 根目录存在 `.codegraph/` 时，理解或定位代码前优先使用 MCP `codegraph_explore` 或 `codegraph explore "问题或符号"`；不存在时跳过，不自行建立索引。
+- 所有生成文件存当前项目内；临时文件放 `.claude/tmp/`，不得复制示例中的代理凭证到文档、日志或新代码。
+
+## Tech Stack
+
+- 模块：`github.com/wmm1996528/cronet-go`；`go.mod` 声明 Go 1.21。
+- 核心：Go、CGO、Cronet C API、Chromium C++ 网络栈；原生库在 Chromium 工作区通过 GN/Ninja 构建。
+- HTTP 入口：标准库 `net/http`；本项目无独立 Web 服务或前端部署配置。
+- 当前无 `*_test.go`，未发现 CI、Dockerfile 或数据库 migration。
+
+## Architecture
+
+`EngineParams` 配置 `Engine`，通过 Cronet C API 初始化网络上下文。`URLRequest` 配合 Executor、Callback 和 Buffer 处理异步请求，`transport.go` 将其适配为 `http.RoundTripper`。双向流走 `StreamEngine` / `BidirectionalStream`，`bidirectional_conn.go` 适配 `net.Conn`。
+
+复用已有原生对象封装和回调注册机制；处理 C/Go 内存与回调生命周期时，先核对对应 Create/Destroy、锁、取消及完成路径。C API 的源定义位于 Chromium `components/cronet/native/cronet.idl`，头文件与实现应和 IDL 保持一致，不仅修改生成文件。
+
+## Build & Run
+
+先准备与目标系统、CPU 架构及定制 C API 匹配的 Cronet 头文件和动态库；Go 包没有内置 `#cgo` 路径配置。
+
+```sh
+export CGO_ENABLED=1
+export CGO_CFLAGS="-I/usr/local/include/cronet"
+export CGO_LDFLAGS="-Wl,-rpath,/usr/local/lib/cronet -L/usr/local/lib/cronet -lcronet"
+go build .
+go vet .
+go test .
+```
+
+这些是完成原生依赖安装后的验证命令，不代表已执行或已通过；当前没有自动化测试用例。上述 `-lcronet` 要求库目录有对应平台的 `libcronet.so` 或 `libcronet.dylib`。Linux 附带版本化库名，使用前需正确安装或建立链接；不得把 macOS 的库用于 Linux，或混用 CPU 架构。
+
+示例构建：`go build -o .claude/tmp/01-example1 ./examples/1`。只构建不运行；示例包含固定代理和外部目标。`examples/build.sh` 硬编码作者本地路径，不能原样复用。`examples/2/main.go` 只有 package 声明；`examples/3` 含不在当前 go.mod 中声明的旧模块引用，不能据此宣称所有示例可构建。
+
+原生构建按 README 的 Chromium checkout、定制提交及桌面构建流程进行；修改 `1.patch` 前须确认目标 Chromium revision、依赖补丁和 GN 参数。本仓库没有足以独立重现原生编译的完整脚本。
+
+## Key Files
+
+- `1.patch`：代理规则、CONNECT 认证、HTTP/2 SETTINGS、请求泄漏检查和 Linux 构建适配补丁。
+- `engine.go` / `engine_params.go`：引擎生命周期和配置；`SetProxyServer` 直接传 `proxy_rules`。
+- `url_request*.go` / `executor*.go` / `buffer*.go`：请求封装、回调及内存管理。
+- `transport.go`：HTTP RoundTripper、响应体、上传与取消适配。
+- `bidirectional_stream*.go` / `bidirectional_conn.go`：双向流接口与 net.Conn 适配。
+- `examples/cronet/include/`：定制 C 头文件；`examples/cronet/VERSION` 标记 126.0.6462.0。
+- `examples/cronet/libcronet.126.0.6462.0.so`：Linux x86-64；`examples/libcronet.dylib`：macOS arm64。
+
+## 补丁约束与待验证项
+
+- CONNECT 构造把 `user_agent` 写入 `Proxy-Authorization`；这是现有定制行为。用户名、密码字段虽传递，补丁内未见实际认证消费；Go 的账号密码解析已注释，不可声称已支持完整代理认证。
+- HTTP/2 随机范围 `32060719, 12060719` 上下界反置；补丁未包含 `SETTINGS_UNDEFINED_SIZE` 定义。修改前结合目标 Chromium / QUICHE 源码核对。
+- IDL 仅加 `proxy_rules`，生成结构却另含用户名、密码；同一 builder 文件有两段不同基线 diff，应用兼容性未验证。
+- 请求泄漏处由 `CHECK(false)` 改为 `LOG(ERROR)`，只放宽该处检查，不能据此认为资源泄漏已修复。
+- README 安装示例固定链接 124.0.6344.0，附带 Linux 库为 126.0.6462.0。Git 提交标题提及 Chrome 144，不能据标题认定当前二进制或补丁适用版本。
+
+## 发布
+
+涉及上线、release、deploy、版本 tag 时，先加载 `.claude/skills/release-report/SKILL.md`。项目产物为 Go 模块及配套原生库，不是已确认的独立部署服务。原生产物重建方式、目标矩阵、分发渠道及下游重启顺序均需补证。
