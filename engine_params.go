@@ -224,9 +224,13 @@ func (p EngineParams) ExperimentalOptions() string {
 // SetProxyServer sets a default value for the Proxy Server to be used for UrlRequests
 // created by this engine. Cronet will forward this requests to destination
 // using this proxy.
-func (p EngineParams) SetProxyServer(options string) {
-
-	cOptions := C.CString(options)
+func (p EngineParams) SetProxyServer(options string) error {
+	rules, username, password, err := parseProxyConfig(options)
+	if err != nil {
+		return err
+	}
+	p.SetProxyCredentials(username, password)
+	cOptions := C.CString(rules)
 	//auth := ""
 	//uri, err := url2.Parse(options)
 	//if err == nil {
@@ -243,6 +247,7 @@ func (p EngineParams) SetProxyServer(options string) {
 	C.Cronet_EngineParams_proxy_rules_set(p.ptr, cOptions)
 
 	C.free(unsafe.Pointer(cOptions))
+	return nil
 }
 
 //func (p EngineParams) ProxyServer() string {

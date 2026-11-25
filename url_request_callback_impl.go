@@ -35,7 +35,7 @@ func (l URLRequestCallback) Destroy() {
 	C.Cronet_UrlRequestCallback_Destroy(l.ptr)
 	urlRequestCallbackAccess.Lock()
 	delete(urlRequestCallbackMap, uintptr(unsafe.Pointer(l.ptr)))
-	urlRequestCallbackAccess.RUnlock()
+	urlRequestCallbackAccess.Unlock()
 }
 
 var (

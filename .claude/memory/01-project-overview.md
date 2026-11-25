@@ -7,14 +7,16 @@ metadata:
 
 # cronet-go
 
-**当前状态**：已有 Go 绑定、Chromium 补丁和预编译库；已静态阅读，尚未验证原生重编译或网络请求。
+**当前状态**：已实现 Chromium 159.0.8154.34 的可复现提取；macOS arm64、Linux x64、Linux arm64 动态库均已编译，并通过 GoLand MCP 全量 `-race` 测试。旧 TLS cipher/curve 配置入口已恢复，实际 ClientHello 顺序验证通过。
 
 **核心约束**：
-- 用户目标：提取 Chromium Cronet，编译 Go 可调用的 so / dylib；重点关注 `1.patch`。
-- 中文回复；会话先加载 ultracave；改动执行 git add、commit；用户已说明不必远程推送，默认不执行 push。规则与构建命令以根目录 CLAUDE.md 为准。
-- Go 模块为 `github.com/wmm1996528/cronet-go`，go.mod 声明 Go 1.21；必须准备定制 C API、匹配架构的原生库与 CGO 编译链接参数。
-- 附带 Linux x86-64 so（VERSION 为 126.0.6462.0）及 macOS arm64 dylib；未核实 dylib 的 Cronet 版本。提交标题 Chrome 144 不能替代产物版本证据。
-- `1.patch` 含自定义代理规则；CONNECT 认证复用 user_agent；用户名/密码传递未见实际认证消费，Go 解析逻辑已注释。
-- 补丁内随机分布上下界反置、SETTINGS_UNDEFINED_SIZE 定义缺失、IDL/生成结构不一致及 builder 重复 diff 均待目标 Chromium 源码验证。
-- 无测试文件、CI、Dockerfile、SQL migration；不运行含固定代理与外部目标的示例。不得将示例凭证复制到新文件。
-- 复用 Engine、URLRequest、Executor、Buffer 和双向流适配，注意原生对象生命周期及回调锁。
+- 用户要求自主完成，所有文件在项目内，需要代理时仅使用 127.0.0.1:8897；Docker 用 host.docker.internal:8897。
+- 中文回复；会话先加载 ultracave；改动执行 git add . 和本地 Conventional Commits；不远程推送。
+- 单元测试通过 GoLand MCP 集成终端运行，不能以普通终端测试代替。示例含固定凭证，禁止运行或复制到新文件。
+- Chromium 159 删除了 C ABI / grpc_support，仅恢复 144.0.7559.0 兼容层并适配 159 接口；网络栈和 Cronet common 使用 159。
+- 锁定输入在 native/cronet.lock.json；源码、工具、缓存放 .build，打包产物放 dist，均不纳入 Git。
+- 代理、HTTP/CONNECT 认证、显式 SSL 忽略、HTTP/2 自定义 SETTINGS / GREASE 已实现；默认正常校验证书，SOCKS 认证返回不支持。
+- `tls_cipher_suites`、`tls_curves` 已接入 experimental JSON 与 Go 辅助方法；159 已删除的 draft Kyber 两个旧别名只能 WARNING 并忽略。原生 CookieStore 在旧版和 159 均禁用，不伪造 `enable_cookie_store` 入口。
+- 原始 1.patch 保留；迁移对照和构建说明见 native/README.md；旧随机区间、User-Agent 认证改写及放宽泄漏 CHECK 不照搬。
+- 读取 Buffer 成功后归 Cronet，只有 OnReadCompleted 交还 Go；EOF/失败/取消时由 Cronet 释放，不得二次释放。
+- 已完成计划：`.claude/plan/2026-11-25/02-refresh-cronet.md`、`.claude/plan/2026-11-25/03-tls-parameter-parity.md`。

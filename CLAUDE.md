@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-cronet-go 将 Chromium Cronet 网络栈编译为 Go 可调用的 `.so` / `.dylib`，通过 CGO 提供原生绑定、HTTP 客户端与双向流适配。本仓库保存 Go 代码、Chromium 补丁和部分预编译库；Chromium 源码及 GN 构建配置在仓库之外。
+cronet-go 将 Chromium Cronet 网络栈编译为 Go 可调用的 `.so` / `.dylib`，通过 CGO 提供原生绑定、HTTP 客户端与双向流适配。本仓库保存 Go 代码、Chromium 补丁及可复现构建脚本；Chromium 源码、工具和缓存位于项目内 `.build/`，新产物位于 `dist/`。
 
 ## Workflow Rules
 
@@ -28,7 +28,7 @@ cronet-go 将 Chromium Cronet 网络栈编译为 Go 可调用的 `.so` / `.dylib
 - 模块：`github.com/wmm1996528/cronet-go`；`go.mod` 声明 Go 1.21。
 - 核心：Go、CGO、Cronet C API、Chromium C++ 网络栈；原生库在 Chromium 工作区通过 GN/Ninja 构建。
 - HTTP 入口：标准库 `net/http`；本项目无独立 Web 服务或前端部署配置。
-- 当前无 `*_test.go`，未发现 CI、Dockerfile 或数据库 migration。
+- 已有本地 HTTP/TLS/代理单测和 Docker 双架构构建；单元测试必须通过 GoLand MCP 执行。无数据库 migration。
 
 ## Architecture
 
@@ -49,29 +49,29 @@ go vet .
 go test .
 ```
 
-这些是完成原生依赖安装后的验证命令，不代表已执行或已通过；当前没有自动化测试用例。上述 `-lcronet` 要求库目录有对应平台的 `libcronet.so` 或 `libcronet.dylib`。Linux 附带版本化库名，使用前需正确安装或建立链接；不得把 macOS 的库用于 Linux，或混用 CPU 架构。
+这些是完成原生依赖安装后的验证命令；自动化测试使用 `scripts/test_cronet.sh <目标>`，通过 GoLand MCP 集成终端运行。上述 `-lcronet` 要求库目录有对应平台的 `libcronet.so` 或 `libcronet.dylib`。Linux 附带版本化库名，使用前需正确安装或建立链接；不得把 macOS 的库用于 Linux，或混用 CPU 架构。
 
 示例构建：`go build -o .claude/tmp/01-example1 ./examples/1`。只构建不运行；示例包含固定代理和外部目标。`examples/build.sh` 硬编码作者本地路径，不能原样复用。`examples/2/main.go` 只有 package 声明；`examples/3` 含不在当前 go.mod 中声明的旧模块引用，不能据此宣称所有示例可构建。
 
-原生构建按 README 的 Chromium checkout、定制提交及桌面构建流程进行；修改 `1.patch` 前须确认目标 Chromium revision、依赖补丁和 GN 参数。本仓库没有足以独立重现原生编译的完整脚本。
+原生构建使用 `scripts/build_cronet.py` 和 `scripts/build_linux.sh`，细节见 `native/README.md`。版本固定在 `native/cronet.lock.json`；原始 `1.patch` 保留，当前迁移由 `scripts/prepare_cronet.py` 实现。159 网络栈配合 144 C ABI / grpc 兼容层，不能混淆两者版本。
 
 ## Key Files
 
 - `1.patch`：代理规则、CONNECT 认证、HTTP/2 SETTINGS、请求泄漏检查和 Linux 构建适配补丁。
-- `engine.go` / `engine_params.go`：引擎生命周期和配置；`SetProxyServer` 直接传 `proxy_rules`。
+- `engine.go` / `engine_params.go`：引擎生命周期和配置；`SetProxyServer` 校验并拆分 URL 账号密码，返回 error；扩展见 `engine_proxy.go`、`engine_http2.go`。
 - `url_request*.go` / `executor*.go` / `buffer*.go`：请求封装、回调及内存管理。
 - `transport.go`：HTTP RoundTripper、响应体、上传与取消适配。
 - `bidirectional_stream*.go` / `bidirectional_conn.go`：双向流接口与 net.Conn 适配。
 - `examples/cronet/include/`：定制 C 头文件；`examples/cronet/VERSION` 标记 126.0.6462.0。
 - `examples/cronet/libcronet.126.0.6462.0.so`：Linux x86-64；`examples/libcronet.dylib`：macOS arm64。
 
-## 补丁约束与待验证项
+## 补丁迁移与验证
 
-- CONNECT 构造把 `user_agent` 写入 `Proxy-Authorization`；这是现有定制行为。用户名、密码字段虽传递，补丁内未见实际认证消费；Go 的账号密码解析已注释，不可声称已支持完整代理认证。
-- HTTP/2 随机范围 `32060719, 12060719` 上下界反置；补丁未包含 `SETTINGS_UNDEFINED_SIZE` 定义。修改前结合目标 Chromium / QUICHE 源码核对。
-- IDL 仅加 `proxy_rules`，生成结构却另含用户名、密码；同一 builder 文件有两段不同基线 diff，应用兼容性未验证。
-- 请求泄漏处由 `CHECK(false)` 改为 `LOG(ERROR)`，只放宽该处检查，不能据此认为资源泄漏已修复。
-- README 安装示例固定链接 124.0.6344.0，附带 Linux 库为 126.0.6462.0。Git 提交标题提及 Chrome 144，不能据标题认定当前二进制或补丁适用版本。
+- 旧 `1.patch` 内的 CONNECT User-Agent 认证改写、反置随机区间、缺失 SETTINGS 枚举和放宽泄漏 CHECK 均不直接复用。
+- 新版使用独立代理认证、HTTP/2 SETTINGS/GREASE 和显式证书忽略参数，IDL 与生成的 C ABI 一致。
+- macOS arm64、Linux x64、Linux arm64 的 159 动态库均已编译，并通过 GoLand MCP 全量 `-race` 单测；TLS cipher/curve 入口和实际 ClientHello 顺序已验证。
+- 维护 Buffer 所有权：成功 Read 转交 Cronet；OnReadCompleted 交还 Go；EOF/取消/错误由 Cronet 释放原生读取缓冲区。不得在终止回调中再次释放。
+- 历史 examples 中的库与版本保持原样，新产物只写 dist，不能通过提交标题推断二进制版本。
 
 ## 发布
 

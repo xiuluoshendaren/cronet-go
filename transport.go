@@ -75,6 +75,7 @@ func (t *RoundTripper) Close() error {
 
 func (t *RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) {
 	requestParams := NewURLRequestParams()
+	defer requestParams.Destroy()
 
 	requestParams.SetPriority(URLRequestParamsRequestPriorityHighest)
 	if request.Method == "" {
@@ -93,11 +94,14 @@ func (t *RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) 
 		}
 	}
 	if request.Body != nil {
-		uploadProvider := NewUploadDataProvider(&bodyUploadProvider{request.Body, request.GetBody, request.ContentLength})
+		length := request.ContentLength
+		if length == 0 && request.Body != http.NoBody {
+			length = -1
+		}
+		uploadProvider := NewUploadDataProvider(&bodyUploadProvider{request.Body, request.GetBody, length})
 		requestParams.SetUploadDataProvider(uploadProvider)
 		requestParams.SetUploadDataExecutor(syncExecutor)
 	}
-	m := &sync.Mutex{}
 	responseHandler := urlResponse{
 		FollowRedirect: t.FollowRedirect,
 		response: http.Response{
@@ -107,44 +111,53 @@ func (t *RoundTripper) RoundTrip(request *http.Request) (*http.Response, error) 
 			ProtoMinor: request.ProtoMinor,
 			Header:     make(http.Header),
 		},
-		readyToRead: sync.NewCond(m),
-		read:        make(chan int),
-		cancel:      make(chan struct{}),
-		done:        make(chan struct{}),
+		ready:  make(chan struct{}),
+		read:   make(chan []byte, 1),
+		cancel: make(chan struct{}),
+		done:   make(chan struct{}),
 	}
 	responseHandler.response.Body = &responseHandler
-	go responseHandler.monitorContext(request.Context())
 
 	callback := NewURLRequestCallback(&responseHandler)
 	urlRequest := NewURLRequest()
 	responseHandler.request = urlRequest
+	responseHandler.callback = callback
 	cronetResult := urlRequest.InitWithParams(t.Engine, request.URL.String(), requestParams, callback, asyncExecutor)
 	if cronetResult != ResultSuccess {
+		urlRequest.Destroy()
+		callback.Destroy()
 		return nil, errors.New("failed to init request, cronet_result_code : " + strconv.Itoa(int(cronetResult)))
 	}
-	requestParams.Destroy()
 	cronetResult = urlRequest.Start()
 	if cronetResult != ResultSuccess {
+		urlRequest.Destroy()
+		callback.Destroy()
 		return nil, errors.New("failed to start request, cronet_result_code : " + strconv.Itoa(int(cronetResult)))
 	}
-	m.Lock()
-	responseHandler.readyToRead.Wait()
-	return &responseHandler.response, responseHandler.err
+	go responseHandler.monitorContext(request.Context())
+	<-responseHandler.ready
+	responseHandler.access.Lock()
+	defer responseHandler.access.Unlock()
+	if responseHandler.response.StatusCode == 0 {
+		return nil, responseHandler.err
+	}
+	return &responseHandler.response, nil
 }
 
 type urlResponse struct {
 	FollowRedirect bool
 
-	readyToRead *sync.Cond
-	request     URLRequest
-	response    http.Response
-	err         error
+	ready     chan struct{}
+	readyOnce sync.Once
+	callback  URLRequestCallback
+	request   URLRequest
+	response  http.Response
+	err       error
 
-	access     sync.Mutex
-	read       chan int
-	readBuffer Buffer
-	cancel     chan struct{}
-	done       chan struct{}
+	access sync.Mutex
+	read   chan []byte
+	cancel chan struct{}
+	done   chan struct{}
 }
 
 func (r *urlResponse) monitorContext(ctx context.Context) {
@@ -155,42 +168,61 @@ func (r *urlResponse) monitorContext(ctx context.Context) {
 	case <-r.cancel:
 	case <-r.done:
 	case <-ctx.Done():
+		r.access.Lock()
 		r.err = ctx.Err()
+		r.access.Unlock()
 		r.Close()
 	}
 }
 
 func (r *urlResponse) Read(p []byte) (n int, err error) {
-	select {
-	case <-r.done:
-		return 0, r.err
-	default:
+	if len(p) == 0 {
+		return 0, nil
 	}
-
 	r.access.Lock()
-
 	select {
 	case <-r.done:
+		err = r.err
 		r.access.Unlock()
-		return 0, r.err
+		return 0, err
+	case <-r.cancel:
+		r.access.Unlock()
+		return 0, net.ErrClosed
 	default:
 	}
-
-	r.readBuffer = NewBuffer()
-	r.readBuffer.InitWithDataAndCallback(p, NewBufferCallback(nil))
-	cronetResult := r.request.Read(r.readBuffer)
-	r.access.Unlock()
-	if cronetResult != ResultSuccess {
-		return 0, errors.New("failed to read body, cronet_result_code : " + strconv.Itoa(int(cronetResult)))
+	buffer := NewBuffer()
+	// Native asynchronous reads must not retain an unpinned Go byte slice.
+	buffer.InitWithAlloc(int64(len(p)))
+	// A successful Read transfers ownership to Cronet. It returns the buffer
+	// through OnReadCompleted, or frees it itself on EOF, error or cancellation.
+	result := r.request.Read(buffer)
+	if result != ResultSuccess {
+		buffer.Destroy()
+		r.access.Unlock()
+		return 0, errors.New("failed to read body, cronet_result_code : " + strconv.Itoa(int(result)))
 	}
-
+	r.access.Unlock()
 	select {
-	case bytesRead := <-r.read:
-		return bytesRead, nil
+	case data := <-r.read:
+		if len(data) == 0 {
+			return 0, io.EOF
+		}
+		return copy(p, data), nil
 	case <-r.cancel:
 		return 0, net.ErrClosed
 	case <-r.done:
-		return 0, r.err
+		// A terminal callback may follow the last completed read immediately.
+		select {
+		case data := <-r.read:
+			if len(data) != 0 {
+				return copy(p, data), nil
+			}
+		default:
+		}
+		r.access.Lock()
+		err = r.err
+		r.access.Unlock()
+		return 0, err
 	}
 }
 
@@ -213,12 +245,14 @@ func (r *urlResponse) Close() error {
 var cronetEncodings = []string{"br", "deflate", "gzip", "x-gzip", "zstd"}
 
 func (r *urlResponse) OnRedirectReceived(self URLRequestCallback, request URLRequest, info URLResponseInfo, newLocationUrl string) {
+	r.access.Lock()
+	defer r.access.Unlock()
 	if r.FollowRedirect {
 		request.FollowRedirect()
 		return
 	}
 	// No need to let cronet follow further redirect after first HTTP response
-	r.response.Status = info.StatusText()
+	r.response.Status = strconv.Itoa(info.StatusCode()) + " " + info.StatusText()
 	r.response.StatusCode = info.StatusCode()
 	headerLen := info.HeaderSize()
 	for i := 0; i < headerLen; i++ {
@@ -227,11 +261,13 @@ func (r *urlResponse) OnRedirectReceived(self URLRequestCallback, request URLReq
 	}
 	r.response.Body = io.NopCloser(io.MultiReader())
 	request.Cancel()
-	r.readyToRead.Signal()
+	r.readyOnce.Do(func() { close(r.ready) })
 }
 
 func (r *urlResponse) OnResponseStarted(self URLRequestCallback, request URLRequest, info URLResponseInfo) {
-	r.response.Status = info.StatusText()
+	r.access.Lock()
+	defer r.access.Unlock()
+	r.response.Status = strconv.Itoa(info.StatusCode()) + " " + info.StatusText()
 	r.response.StatusCode = info.StatusCode()
 	headerLen := info.HeaderSize()
 
@@ -252,28 +288,32 @@ func (r *urlResponse) OnResponseStarted(self URLRequestCallback, request URLRequ
 		r.response.ContentLength = -1
 		r.response.Header.Del("Content-Length")
 	} else {
-		r.response.ContentLength, _ = strconv.ParseInt(r.response.Header.Get("Content-Length"), 10, 64)
+		r.response.ContentLength = -1
+		if value := r.response.Header.Get("Content-Length"); value != "" {
+			r.response.ContentLength, _ = strconv.ParseInt(value, 10, 64)
+		}
 	}
-	r.response.TransferEncoding = r.response.Header.Values("Content-Transfer-Encoding")
+	protocol := info.NegotiatedProtocol()
+	r.response.Proto, r.response.ProtoMajor, r.response.ProtoMinor = "HTTP/1.1", 1, 1
+	if protocol == "h2" {
+		r.response.Proto, r.response.ProtoMajor, r.response.ProtoMinor = "HTTP/2.0", 2, 0
+	} else if strings.HasPrefix(protocol, "h3") || strings.Contains(protocol, "quic") {
+		r.response.Proto, r.response.ProtoMajor, r.response.ProtoMinor = "HTTP/3.0", 3, 0
+	}
+	r.response.TransferEncoding = r.response.Header.Values("Transfer-Encoding")
 	r.response.Close = true
-	r.readyToRead.Signal()
+	r.readyOnce.Do(func() { close(r.ready) })
 }
 
 func (r *urlResponse) OnReadCompleted(self URLRequestCallback, request URLRequest, info URLResponseInfo, buffer Buffer, bytesRead int64) {
+	defer buffer.Destroy()
 	r.access.Lock()
 	defer r.access.Unlock()
-
-	if bytesRead == 0 {
-		r.OnSucceeded(self, request, info)
-		return
-	}
-
+	data := append([]byte(nil), buffer.DataSlice()[:int(bytesRead)]...)
 	select {
 	case <-r.cancel:
 	case <-r.done:
-	case r.read <- int(bytesRead):
-		r.readBuffer.Destroy()
-		r.readBuffer = Buffer{}
+	case r.read <- data:
 	}
 }
 
@@ -304,8 +344,9 @@ func (r *urlResponse) close(request URLRequest, err error) {
 	}
 
 	close(r.done)
-	r.readyToRead.Signal()
+	r.readyOnce.Do(func() { close(r.ready) })
 	request.Destroy()
+	r.callback.Destroy()
 }
 
 type bodyUploadProvider struct {
@@ -324,7 +365,7 @@ func (p *bodyUploadProvider) Read(self UploadDataProvider, sink UploadDataSink, 
 		if err == io.EOF {
 			if p.contentLength == -1 {
 				// Case for chunked uploads
-				sink.OnReadSucceeded(0, true)
+				sink.OnReadSucceeded(int64(n), true)
 			} else {
 				sink.OnReadSucceeded(int64(n), false)
 			}

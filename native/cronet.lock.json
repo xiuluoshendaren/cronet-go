@@ -1,0 +1,22 @@
+{
+  "chrome_version": "159.0.8154.34",
+  "chromium_revision": "4deb883708d3d25100c5aac2148aafc95dae95ac",
+  "channel": "Stable",
+  "platform": "Mac",
+  "resolved_on": "2026-11-25",
+  "release_api": "https://chromiumdash.appspot.com/fetch_releases?channel=Stable&platform=Mac&num=1",
+  "compatibility_version": "144.0.7559.0",
+  "archives": {
+    "cronet": {
+      "url": "https://chromium.googlesource.com/chromium/src/+archive/refs/tags/144.0.7559.0/components/cronet.tar.gz",
+      "sha256": "3a3b8534f85cf5688326895017ff7d5dff0d4ca4a236e6d656bbd5002a6e418e",
+      "filename": "cronet-144.0.7559.0.tar.gz"
+    },
+    "grpc_support": {
+      "url": "https://chromium.googlesource.com/chromium/src/+archive/refs/tags/144.0.7559.0/components/grpc_support.tar.gz",
+      "sha256": "781aaf6b705b64a9ef253e5fb0170435f7793b498a13867080b98710ff3299e9",
+      "filename": "grpc-support-144.0.7559.0.tar.gz"
+    }
+  },
+  "depot_tools_revision": "ee90e3f95824aa10ed7a912fe08e16e45eb62004"
+}
