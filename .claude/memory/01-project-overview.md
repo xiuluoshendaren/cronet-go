@@ -11,7 +11,7 @@ metadata:
 
 **核心约束**：
 - 用户目标：提取 Chromium Cronet，编译 Go 可调用的 so / dylib；重点关注 `1.patch`。
-- 中文回复；会话先加载 ultracave；改动执行 git add、commit、push。规则与构建命令以根目录 CLAUDE.md 为准。
+- 中文回复；会话先加载 ultracave；改动执行 git add、commit；用户已说明不必远程推送，默认不执行 push。规则与构建命令以根目录 CLAUDE.md 为准。
 - Go 模块为 `github.com/wmm1996528/cronet-go`，go.mod 声明 Go 1.21；必须准备定制 C API、匹配架构的原生库与 CGO 编译链接参数。
 - 附带 Linux x86-64 so（VERSION 为 126.0.6462.0）及 macOS arm64 dylib；未核实 dylib 的 Cronet 版本。提交标题 Chrome 144 不能替代产物版本证据。
 - `1.patch` 含自定义代理规则；CONNECT 认证复用 user_agent；用户名/密码传递未见实际认证消费，Go 解析逻辑已注释。

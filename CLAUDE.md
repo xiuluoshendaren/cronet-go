@@ -12,7 +12,7 @@ cronet-go 将 Chromium Cronet 网络栈编译为 Go 可调用的 `.so` / `.dylib
 2. **大任务维护工作包清单** — 多步骤、多文件或多阶段任务，在计划中先列工作包表格：`编号 / 内容 / 状态`。状态只用 `待执行`、`执行中`、`已完成` 或 `阻塞（注明原因）`；开始某包立即回写“执行中”，完成立即回写“已完成”，不得在最后批量补写。计划与状态记录随任务提交。
 3. **新会话先装载项目上下文** — 完整读取根目录 `CLAUDE.md` 和 `MEMORY.md`；遵循 `CLAUDE.md` 引用的项目规范。项目有 `.claude/skills/` 时，对当前任务适用的技能须先加载再执行。
 4. **记忆索引保持完整** — 新增、重命名或删除 `.claude/memory/` 下记忆文件时，同步更新根目录 `MEMORY.md`；结束前确认索引链接与实际记忆一一对应。
-5. **Agent 改动的文件必须提交并推送** — 所有由 agent 操作（增、删、改）且应纳入版本控制的文件，都必须依次执行 `git add .`、`git commit`、`git push`。commit message 用 Conventional Commits、准确描述改动；无 upstream 时用 `git push -u origin <当前分支>`。测试失败、冲突、权限拒绝或推送失败时停止并如实报告。
+5. **Agent 改动的文件必须本地提交** — 所有由 agent 操作（增、删、改）且应纳入版本控制的文件，都必须依次执行 `git add .`、`git commit`。commit message 用 Conventional Commits、准确描述改动。用户已说明不必远程推送，默认不执行 `git push`；只有用户明确要求远程交付时才推送，包括项目技能生成的报告。测试失败、冲突、权限拒绝或明确要求的推送失败时停止并如实报告。
 6. **worktrees 与编号统一管理** — 所有 worktrees 放在 `.claude/worktrees/`；`.claude` 下生成文件按本 skill 的 `NN-` 编号规则命名。
 7. **跨 agent 资源入口保持统一** — 项目根目录的 `.agents` 必须是指向 `.claude` 的相对符号链接，其他 agent 与 Claude 共用同一份 skills、memory 等资源，不复制维护第二份。
 
